@@ -131,6 +131,7 @@ def _create_deit(variant, pretrained=False, distilled=False, **kwargs):
         model_cls,
         variant,
         pretrained,
+        pretrained_strict=False,
         pretrained_filter_fn=partial(checkpoint_filter_fn, adapt_layer_scale=True),
         feature_cfg=dict(out_indices=out_indices, feature_cls='getter'),
         **kwargs,
@@ -245,6 +246,45 @@ default_cfgs = generate_default_cfgs({
         url='https://dl.fbaipublicfiles.com/deit/deit_3_huge_224_21k_v1.pth',
         crop_pct=1.0),
 })
+
+
+@register_model
+def deit_tiny_patch16_224_ttt(pretrained=False, **kwargs) -> VisionTransformer:
+    model_args = dict(
+        patch_size=16, embed_dim=192, depth=12, num_heads=3, attn_layer="attn_ttt"
+    )
+    model = _create_deit(
+        "deit_tiny_patch16_224",
+        pretrained=pretrained,
+        **dict(model_args, **kwargs),
+    )
+    return model
+
+
+@register_model
+def deit_small_patch16_224_ttt(pretrained=False, **kwargs) -> VisionTransformer:
+    model_args = dict(
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, attn_layer="attn_ttt"
+    )
+    model = _create_deit(
+        "deit_small_patch16_224",
+        pretrained=pretrained,
+        **dict(model_args, **kwargs),
+    )
+    return model
+
+
+@register_model
+def deit_base_patch16_224_ttt(pretrained=False, **kwargs) -> VisionTransformer:
+    model_args = dict(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, attn_layer="attn_ttt"
+    )
+    model = _create_deit(
+        "deit_base_patch16_224",
+        pretrained=pretrained,
+        **dict(model_args, **kwargs),
+    )
+    return model
 
 
 @register_model

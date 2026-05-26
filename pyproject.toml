@@ -29,6 +29,9 @@ dependencies = [
         'huggingface_hub',
         'safetensors',
         'wandb',
+        "matplotlib",
+        "isort",
+        "fvcore>=0.1.5.post20221221",
 ]
 dynamic = ["version"]
 
@@ -68,3 +71,8 @@ torchvision = [{ index = "pytorch-cu128" }]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+]

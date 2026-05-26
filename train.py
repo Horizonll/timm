@@ -151,6 +151,10 @@ group.add_argument('--grad-checkpointing', action='store_true', default=False,
 group.add_argument('--fast-norm', default=False, action='store_true',
                    help='enable experimental fast-norm')
 group.add_argument('--model-kwargs', nargs='*', default={}, action=utils.ParseKwargs)
+group.add_argument('--train-ttt-only', action='store_true', default=False,
+                   help='Train only TTT attention parameters (w1, w2) and freeze all others')
+group.add_argument('--ttt-lr-mult', type=float, default=1.0, metavar='N',
+                   help='LR multiplier for TTT params when training full model (default: 1.0)')
 group.add_argument('--head-init-scale', default=None, type=float,
                    help='Head initialization scale')
 group.add_argument('--head-init-bias', default=None, type=float,
@@ -575,6 +579,20 @@ def main():
                 'Converted model to use Synchronized BatchNorm. WARNING: You may have issues if using '
                 'zero initialized BN layers (enabled by default for ResNets) while sync-bn enabled.')
 
+    if args.train_ttt_only:
+        trainable = []
+        for name, param in model.named_parameters():
+            if name.endswith('attn.w1') or name.endswith('attn.w2'):
+                param.requires_grad = True
+                trainable.append(name)
+            else:
+                param.requires_grad = False
+        if utils.is_primary(args):
+            if trainable:
+                _logger.info('Training only TTT params: %s', ', '.join(trainable))
+            else:
+                _logger.warning('train_ttt_only enabled but no TTT params were found in the model.')
+
     model_patch_size = None
     if args.naflex_loader:
         # NaFlexVit models have embeds.patch_size. Needs to be extracted here before mutating the model.
@@ -599,8 +617,43 @@ def main():
                 f'Learning rate ({args.lr}) calculated from base learning rate ({args.lr_base}) '
                 f'and effective global batch size ({global_batch_size}) with {args.lr_base_scale} scaling.')
 
+    param_group_fn = None
+    if not args.train_ttt_only and args.ttt_lr_mult != 1.0:
+        def _ttt_param_group_fn(model):
+            no_weight_decay = getattr(model, 'no_weight_decay', lambda: set())()
+            base_decay = []
+            base_no_decay = []
+            ttt_decay = []
+            ttt_no_decay = []
+
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                is_ttt = name.endswith('attn.w1') or name.endswith('attn.w2')
+                no_decay = param.ndim <= 1 or name.endswith('.bias') or name in no_weight_decay
+
+                if is_ttt:
+                    (ttt_no_decay if no_decay else ttt_decay).append(param)
+                else:
+                    (base_no_decay if no_decay else base_decay).append(param)
+
+            ttt_lr = args.lr * args.ttt_lr_mult
+            groups = []
+            if base_no_decay:
+                groups.append({'params': base_no_decay, 'weight_decay': 0.})
+            if base_decay:
+                groups.append({'params': base_decay, 'weight_decay': args.weight_decay})
+            if ttt_no_decay:
+                groups.append({'params': ttt_no_decay, 'weight_decay': 0., 'lr': ttt_lr})
+            if ttt_decay:
+                groups.append({'params': ttt_decay, 'weight_decay': args.weight_decay, 'lr': ttt_lr})
+            return groups
+
+        param_group_fn = _ttt_param_group_fn
+
     optimizer = create_optimizer_v2(
         model,
+        param_group_fn=param_group_fn,
         **optimizer_kwargs(cfg=args),
         **args.opt_kwargs,
     )

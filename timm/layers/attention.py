@@ -1,4 +1,4 @@
-from typing import Final, Optional, Type
+from typing import Final, Optional, Tuple, Type
 
 import torch
 from torch import nn as nn
@@ -7,9 +7,10 @@ from torch.nn import functional as F
 from ._fx import register_notrace_function
 from .config import use_fused_attn
 from .pos_embed_sincos import apply_rot_embed_cat
+from .weight_init import trunc_normal_
 
 
-__all__ = ['Attention', 'AttentionRope', 'maybe_add_mask', 'resolve_self_attn_mask']
+__all__ = ['Attention', 'AttentionTTT', 'AttentionRope', 'maybe_add_mask', 'resolve_self_attn_mask']
 
 
 @torch.fx.wrap
@@ -131,6 +132,107 @@ class Attention(nn.Module):
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B, N, self.attn_dim)
+        x = self.norm(x)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class AttentionTTT(Attention):
+    """Attention with an additive TTT SwiGLU path."""
+
+    def __init__(
+            self,
+            dim: int,
+            num_heads: int = 8,
+            attn_head_dim: Optional[int] = None,
+            dim_out: Optional[int] = None,
+            qkv_bias: bool = False,
+            qk_norm: bool = False,
+            scale_norm: bool = False,
+            proj_bias: bool = True,
+            attn_drop: float = 0.,
+            proj_drop: float = 0.,
+            norm_layer: Optional[Type[nn.Module]] = None,
+            ttt_lr: float = 1.0,
+            ttt_scale: Optional[float] = None,
+            device=None,
+            dtype=None,
+    ) -> None:
+        super().__init__(
+            dim=dim,
+            num_heads=num_heads,
+            attn_head_dim=attn_head_dim,
+            dim_out=dim_out,
+            qkv_bias=qkv_bias,
+            qk_norm=qk_norm,
+            scale_norm=scale_norm,
+            proj_bias=proj_bias,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            norm_layer=norm_layer,
+            device=device,
+            dtype=dtype,
+        )
+        dd = {'device': device, 'dtype': dtype}
+        if ttt_scale is None:
+            ttt_scale = self.head_dim ** -0.5
+
+        self.ttt_lr = ttt_lr
+        self.ttt_scale = float(ttt_scale)
+        self.w1 = nn.Parameter(torch.zeros(1, self.num_heads, self.head_dim, self.head_dim, **dd))
+        self.w2 = nn.Parameter(torch.zeros(1, self.num_heads, self.head_dim, self.head_dim, **dd))
+        trunc_normal_(self.w1, std=.02)
+        trunc_normal_(self.w2, std=.02)
+
+    def _ttt_update(self, k: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        z1 = k @ self.w1
+        z2 = k @ self.w2
+        sig = torch.sigmoid(z2)
+        a = z2 * sig
+
+        e = -v / float(v.shape[2]) * self.ttt_scale
+        g1 = k.transpose(-2, -1) @ (e * a)
+        g2 = k.transpose(-2, -1) @ (e * z1 * (sig * (1.0 + z2 * (1.0 - sig))))
+
+        g1 = g1 / (g1.norm(dim=-2, keepdim=True) + 1.0)
+        g2 = g2 / (g2.norm(dim=-2, keepdim=True) + 1.0)
+
+        w1 = self.w1 - self.ttt_lr * g1
+        w2 = self.w2 - self.ttt_lr * g2
+        return w1, w2
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            attn_mask: Optional[torch.Tensor] = None,
+            is_causal: bool = False,
+    ) -> torch.Tensor:
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
+        q, k = self.q_norm(q), self.k_norm(k)
+
+        if self.fused_attn:
+            x = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.attn_drop.p if self.training else 0.,
+                is_causal=is_causal,
+            )
+        else:
+            q = q * self.scale
+            attn = q @ k.transpose(-2, -1)
+            attn_bias = resolve_self_attn_mask(N, attn, attn_mask, is_causal)
+            attn = maybe_add_mask(attn, attn_bias)
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = attn @ v
+
+        w1, w2 = self._ttt_update(k, v)
+        x = x + (q @ w1) * F.silu(q @ w2)
 
         x = x.transpose(1, 2).reshape(B, N, self.attn_dim)
         x = self.norm(x)

@@ -121,3 +121,10 @@ Testing notebook.ipynb
 /*.tar.*
 uv.lock
 wandb
+run
+*.JPEG
+visualize
+*.png
+*.ipynb
+scripts
+*.sh

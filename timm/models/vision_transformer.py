@@ -47,6 +47,7 @@ from timm.data import (
 )
 from timm.layers import (
     Attention,
+    AttentionTTT,
     DiffAttention,
     AttentionPoolLatent,
     AttentionPoolPrr,
@@ -85,6 +86,7 @@ _logger = logging.getLogger(__name__)
 ATTN_LAYERS = {
     '': Attention,
     'attn': Attention,
+    'attn_ttt': AttentionTTT,
     'diff': DiffAttention,
 }
 

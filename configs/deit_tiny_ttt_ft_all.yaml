@@ -1,0 +1,36 @@
+model: deit_tiny_patch16_224_ttt
+pretrained: true
+train_ttt_only: false
+ttt_lr_mult: 20
+
+data_dir: /home/data/imagenet
+output: /cluster/nvme4a/hrz/output
+
+# train_interpolation: bicubic
+# aa: rand-m9-mstd0.5-inc1
+# mixup: 0.8
+# cutmix: 1.0
+# mixup_prob: 1.0
+# reprob: 0.25
+# drop: 0.0
+# drop_path: 0.0
+
+batch_size: 292
+epochs: 30
+lr_base: 2e-5
+warmup_lr: 1e-8
+min_lr: 2e-7
+weight_decay: 1e-8
+opt: adamw
+opt_eps: 1e-8
+
+log_wandb: true
+wandb_project: vit
+checkpoint_hist: 3
+log_interval: 100
+
+amp: true
+channels_last: true
+torchcompile: inductor
+workers: 12
+use_multi_epochs_loader: true
